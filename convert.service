@@ -1,0 +1,16 @@
+[Unit]
+Description="save in /etc/systemd/system/convert.service, systemctl enable convert.service, systemctl start convert.service"
+
+[Service]
+ExecStart=npm start
+WorkingDirectory=/root/watchparty-convert
+Restart=always
+RestartSec=3
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=CONVERT
+Environment=NODE_ENV=production
+Environment=PORT=80
+
+[Install]
+WantedBy=multi-user.target
