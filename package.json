@@ -12,11 +12,13 @@
     "prettier": "npx prettier --single-quote --write ."
   },
   "devDependencies": {
-    "@types/node": "^24.5.2"
+    "@types/node": "^24.5.2",
+    "@types/ws": "^8.18.1"
   },
   "dependencies": {
-    "@fastify/cors": "^11.1.0",
+    "@types/express": "^5.0.3",
     "dotenv": "^17.2.2",
-    "fastify": "^5.6.0"
+    "express": "^5.1.0",
+    "ws": "^8.18.3"
   }
 }
