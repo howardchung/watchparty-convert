@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import cp from 'node:child_process';
 import fs from 'node:fs';
-import { WebSocketServer, type WebSocket } from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
 import http from 'node:http';
 import https from 'node:https';
 import express from 'express';
@@ -38,29 +38,29 @@ const server = (key && cert) ? https.createServer({ key, cert }, app) : http.cre
 const wss = new WebSocketServer({ server });
 server.listen(port);
 
-app.get('/:id', (req, res) => {
-  const id = req.params.id;
-  console.log(id);
-  const { range } = req.headers;
-  let streamOptions = undefined;
-  let { size: fileSize } = fs.statSync('/tmp/' + id);
-  if (range) {
-    const [s, e] = range.replace("bytes=", "").split("-");
-    const start = Number(s);
-    const end = Number(e) || fileSize - 1;
-    streamOptions = { start, end };
-    res.append("Accept-Ranges", "bytes");
-    res.append("Content-Range", `bytes ${start}-${end}/${fileSize}`);
-    res.append("Content-Length", String(end - start + 1));
-    res.status(206);
-  } else {
-    res.append("Content-Length", String(fileSize));
-  }
-  res.append('Access-Control-Allow-Origin', '*');
-  res.append("Content-Type", "video/mp4");
-  const fileStream = fs.createReadStream('/tmp/' + id, streamOptions);
-  fileStream.pipe(res);
-});
+// app.get('/:id', (req, res) => {
+//   const id = req.params.id;
+//   console.log(id);
+//   const { range } = req.headers;
+//   let streamOptions = undefined;
+//   let { size: fileSize } = fs.statSync('/tmp/' + id);
+//   if (range) {
+//     const [s, e] = range.replace("bytes=", "").split("-");
+//     const start = Number(s);
+//     const end = Number(e) || fileSize - 1;
+//     streamOptions = { start, end };
+//     res.append("Accept-Ranges", "bytes");
+//     res.append("Content-Range", `bytes ${start}-${end}/${fileSize}`);
+//     res.append("Content-Length", String(end - start + 1));
+//     res.status(206);
+//   } else {
+//     res.append("Content-Length", String(fileSize));
+//   }
+//   res.append('Access-Control-Allow-Origin', '*');
+//   res.append("Content-Type", "video/mp4");
+//   const fileStream = fs.createReadStream('/tmp/' + id, streamOptions);
+//   fileStream.pipe(res);
+// });
 
 wss.on('connection', (ws, req) => {
   console.log(req.url);
@@ -73,23 +73,23 @@ wss.on('connection', (ws, req) => {
     // Publisher
     const room = new Map<string, WebSocket>();
     rooms.set(id, room);
-    // ws.send('wss://azure.howardchung.net:5001/' + id);
-    // let ffmpeg: cp.ChildProcessWithoutNullStreams | null = cp.spawn('ffmpeg', [
-    //   '-re',
-    //   '-i',
-    //   'pipe:',
-    //   '-c:v',
-    //   'libx264',
-    //   '-preset',
-    //   'veryfast',
-    //   '-c:a',
-    //   'aac',
-    //   '-ac',
-    //   '2',
-    //   '-f',
-    //   'mpegts',
-    //   '-',
-    // ]);
+    ws.send('wss://azure.howardchung.net:5001/' + id);
+    let ffmpeg: cp.ChildProcessWithoutNullStreams | null = cp.spawn('ffmpeg', [
+      '-re',
+      '-i',
+      'pipe:',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'veryfast',
+      '-c:a',
+      'aac',
+      '-ac',
+      '2',
+      '-f',
+      'mpegts',
+      '-',
+    ]);
     // let ffmpeg: cp.ChildProcessWithoutNullStreams | null = cp.spawn('ffmpeg', [
     //   '-i',
     //   'pipe:',
@@ -107,22 +107,22 @@ wss.on('connection', (ws, req) => {
     //   'frag_keyframe+empty_moov+faststart',
     //   '/tmp/' + id,
     // ]);
-    let ffmpeg: cp.ChildProcessWithoutNullStreams | null = cp.spawn('ffmpeg', [
-      '-re',
-      '-i',
-      'pipe:',
-      '-c:v',
-      'libx264',
-      '-preset',
-      'veryfast',
-      '-c:a',
-      'aac',
-      '-ac',
-      '2',
-      '-f',
-      'hls',
-      '/tmp/' + id + '.m3u8',
-    ]);
+    // let ffmpeg: cp.ChildProcessWithoutNullStreams | null = cp.spawn('ffmpeg', [
+    //   '-re',
+    //   '-i',
+    //   'pipe:',
+    //   '-c:v',
+    //   'libx264',
+    //   '-preset',
+    //   'veryfast',
+    //   '-c:a',
+    //   'aac',
+    //   '-ac',
+    //   '2',
+    //   '-f',
+    //   'hls',
+    //   '/tmp/' + id + '.m3u8',
+    // ]);
     let urlSent = false;
     ws.on('message', (data) => {
       const sendNext = ffmpeg?.stdin.write(data);
