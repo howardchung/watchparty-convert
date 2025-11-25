@@ -110,8 +110,8 @@ server.on("stream", async (stream, headers) => {
         } catch (e) {
           console.log(e);
         }
-        console.log("upload ended, cleaning up");
         // clean up room when stream is done (complete or error)
+        console.log("upload ended, cleaning up");
         ffmpeg.kill();
         rooms.delete(id);
       }
@@ -120,11 +120,15 @@ server.on("stream", async (stream, headers) => {
       const id = headers[":path"] ?? "";
       let ffmpeg = rooms.get(id);
       // Wait for room to be available if it's not
-      while (!ffmpeg && stream.readable) {
+      while (!ffmpeg) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         ffmpeg = rooms.get(id);
+        if (!stream.writable) {
+          // Client disconnected before we initialized
+          return;
+        }
       }
-      await pipeline(ffmpeg!.stdout, stream);
+      await pipeline(ffmpeg.stdout, stream);
     } else {
       stream.end();
     }
