@@ -30,21 +30,34 @@ const cert = process.env.SSL_CRT_FILE
   ? fs.readFileSync(process.env.SSL_CRT_FILE).toString()
   : "";
 const port = Number(process.env.PORT) || 80;
-const server = http2.createSecureServer({ key, cert });
+const server = (key && cert) ? http2.createSecureServer({ key, cert }) : http2.createServer();
+
 server.listen(port);
+
+const x264 = [
+  "-filter:v",
+  'fps=fps=30,scale=1280:-1',
+  "-c:v",
+  "libx264",
+  "-preset",
+  "veryfast",
+  "-x264-params",
+  '"keyint=30:scenecut=0"',
+  "-crf",
+  "26",
+  "-c:a",
+  "aac",
+  "-ac",
+  "2",
+  "-g",
+  "60",
+];
 
 const opts1 = [
   "-re",
   "-i",
   "pipe:",
-  "-c:v",
-  "libx264",
-  "-preset",
-  "veryfast",
-  "-c:a",
-  "aac",
-  "-ac",
-  "2",
+  ...x264,
   "-f",
   "mpegts",
   "-",
@@ -53,58 +66,58 @@ const opts1 = [
 const opts2 = (id: string) => [
   "-i",
   "pipe:",
-  "-c:v",
-  "libx264",
-  "-preset",
-  "veryfast",
-  "-c:a",
-  "aac",
-  "-ac",
-  "2",
+  ...x264,
   "-f",
   "mp4",
   "-movflags",
   "frag_keyframe+empty_moov+faststart",
-  "/tmp/" + id,
+  "/tmp" + id,
 ];
 
 const opts3 = (id: string) => [
-  "-re",
+  // -re causes conversion to happen at playback speed
+  // If we want to convert as fast as possible, disable it
+  // "-re",
   "-i",
   "pipe:",
-  "-c:v",
-  "libx264",
-  "-preset",
-  "veryfast",
-  "-c:a",
-  "aac",
-  "-ac",
-  "2",
+  ...x264,
   "-f",
   "hls",
-  "/tmp/" + id + ".m3u8",
+  "-hls_list_size",
+  "0",
+  "/tmp" + id,
 ];
 
 const rooms = new Map<string, cp.ChildProcessWithoutNullStreams>();
 server.on("stream", async (stream, headers) => {
   try {
-    console.log(headers[":method"]);
-    stream.respond({
-      "access-control-allow-origin": '*',
-    });
-    if (headers[":method"] === "POST") {
+    const id = headers[":path"] ?? "";
+    console.log(headers[":method"], id);
+    let outHeaders: http2.OutgoingHttpHeaders = {
+      "access-control-allow-origin": "*",
+    };
+    if (headers[':method'] == 'OPTIONS') {
+      stream.respond(outHeaders);
+      stream.end();
+    } else if (headers[":method"] === "POST") {
       // Publisher
-      const id = headers[":path"] ?? "";
       if (!rooms.get(id)) {
+        let opts = opts3(id);
+        if (id.endsWith(".mpegts")) {
+          opts = opts1;
+        }
         let ffmpeg: cp.ChildProcessWithoutNullStreams | null = cp.spawn(
           "ffmpeg",
-          opts1,
+          opts,
         );
         rooms.set(id, ffmpeg);
         console.log(id, ffmpeg);
-        ffmpeg.stderr.on('data', (data) => {
+        ffmpeg.stderr.on("data", (data) => {
           console.log(data.toString());
+          // Would be nice to send this to the client as a stream but right now fetch buffers the entire response
+          // stream.write(data.toString());
         });
+        stream.respond(outHeaders);
         try {
           await pipeline(stream, ffmpeg.stdin);
         } catch (e) {
@@ -115,28 +128,54 @@ server.on("stream", async (stream, headers) => {
         ffmpeg.kill();
         rooms.delete(id);
       }
-    } else if (headers[":method"] === 'GET') {
+    } else if (id.endsWith(".mpegts") && headers[":method"] === "GET") {
       // Reader
-      const id = headers[":path"] ?? "";
       let ffmpeg = rooms.get(id);
       // Wait for room to be available if it's not
       while (!ffmpeg) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         ffmpeg = rooms.get(id);
-        if (!stream.writable) {
-          // Client disconnected before we initialized
-          return;
-        }
       }
+      stream.respond(outHeaders);
       await pipeline(ffmpeg.stdout, stream);
+    } else if (headers[":method"] === "GET") {
+      // Serve static file from /tmp
+      // http2 handles ../../ inputs already
+      // Do we need to parse out/ignore query params?
+      if (id.endsWith(".m3u8")) {
+        outHeaders["content-type"] = "application/vnd.apple.mpegurl";
+        outHeaders['cache-control'] = 'no-cache';
+      } else if (id.endsWith(".ts")) {
+        outHeaders["content-type"] = "video/mp2t";
+      }
+      if (!fs.existsSync('/tmp' + id)) {
+        stream.respond({ ":status": 404, ...outHeaders });
+        stream.end();
+        return;
+      }
+      const fileStream = fs.createReadStream("/tmp" + id);
+      stream.respond(outHeaders);
+      await pipeline(fileStream, stream);
     } else {
+      stream.respond({ ":status": 404, ...outHeaders });
       stream.end();
     }
-  } catch(e) {
+  } catch (e: any) {
     console.error(e);
     if (stream.writable) {
-      stream.respond({ ':status': 500 });
-      stream.end('error');
+      stream.respond({ ":status": 500 });
+      stream.end("error");
+    }
+  }
+});
+
+// Background process to clean up tmp files older than a day
+setInterval(() => {
+  const files = fs.readdirSync('/tmp');
+  for(let file of files) {
+    if (Date.now() - fs.statSync(file).birthtimeMs > 24 * 60 * 60 *1000) {
+      console.log('deleting ' + file);
+      fs.unlinkSync('/tmp/' + file);
     }
   }
 });
