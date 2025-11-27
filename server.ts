@@ -166,8 +166,10 @@ server.on("stream", async (stream, headers) => {
     }
   } catch (e: any) {
     console.error(e);
-    if (stream.writable) {
+    if (!stream.headersSent) {
       stream.respond({ ":status": 500 });
+    }
+    if (!stream.closed) {
       stream.end("error");
     }
   }
