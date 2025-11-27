@@ -8,7 +8,7 @@
   "main": "server.ts",
   "scripts": {
     "start": "node --env-file-if-exists=.env server.ts",
-    "dev": "node --env-file-if-exists=.env --watch server.ts",
+    "dev": "node --env-file-if-exists=.env --watch-path . server.ts",
     "prettier": "npx prettier --write ."
   },
   "devDependencies": {

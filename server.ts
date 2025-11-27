@@ -1,5 +1,6 @@
 import cp from "node:child_process";
-import fs from "node:fs";
+import fs, { existsSync } from "node:fs";
+import { unlink, readdir, stat } from "node:fs/promises";
 import http2 from "node:http2";
 import { pipeline } from "node:stream/promises";
 
@@ -22,7 +23,11 @@ import { pipeline } from "node:stream/promises";
 // seeking is hard because we don't keep the entire file
 // alternative: write output to a mp4 file, and serve static http file
 // however then we need to manage cleanup of the file
+// Current solution: Write to HLS/m3u8 and treat as a live stream
+// Set up TOTP to verify subscribers if needed
 
+
+fs.mkdirSync("/tmp/convert", { recursive: true });
 const key = process.env.SSL_KEY_FILE
   ? fs.readFileSync(process.env.SSL_KEY_FILE).toString()
   : "";
@@ -30,13 +35,15 @@ const cert = process.env.SSL_CRT_FILE
   ? fs.readFileSync(process.env.SSL_CRT_FILE).toString()
   : "";
 const port = Number(process.env.PORT) || 80;
-const server = (key && cert) ? http2.createSecureServer({ key, cert }) : http2.createServer();
+const server =
+  key && cert ? http2.createSecureServer({ key, cert }) : http2.createServer();
+const basePath = "/tmp/convert";
 
 server.listen(port);
 
 const x264 = [
   "-filter:v",
-  'fps=fps=30,scale=1280:-1',
+  "fps=fps=30,scale='min(iw, 1920)':-1",
   "-c:v",
   "libx264",
   "-preset",
@@ -53,15 +60,7 @@ const x264 = [
   "60",
 ];
 
-const opts1 = [
-  "-re",
-  "-i",
-  "pipe:",
-  ...x264,
-  "-f",
-  "mpegts",
-  "-",
-];
+const opts1 = ["-re", "-i", "pipe:", ...x264, "-f", "mpegts", "-"];
 
 const opts2 = (id: string) => [
   "-i",
@@ -71,7 +70,7 @@ const opts2 = (id: string) => [
   "mp4",
   "-movflags",
   "frag_keyframe+empty_moov+faststart",
-  "/tmp" + id,
+  basePath + id,
 ];
 
 const opts3 = (id: string) => [
@@ -85,18 +84,19 @@ const opts3 = (id: string) => [
   "hls",
   "-hls_list_size",
   "0",
-  "/tmp" + id,
+  basePath + id,
 ];
 
 const rooms = new Map<string, cp.ChildProcessWithoutNullStreams>();
 server.on("stream", async (stream, headers) => {
   try {
-    const id = headers[":path"] ?? "";
+    const url = new URL('http://localhost' + (headers[":path"] ?? ""));
+    const id = url.pathname;
     console.log(headers[":method"], id);
     let outHeaders: http2.OutgoingHttpHeaders = {
       "access-control-allow-origin": "*",
     };
-    if (headers[':method'] == 'OPTIONS') {
+    if (headers[":method"] == "OPTIONS") {
       stream.respond(outHeaders);
       stream.end();
     } else if (headers[":method"] === "POST") {
@@ -140,20 +140,18 @@ server.on("stream", async (stream, headers) => {
       await pipeline(ffmpeg.stdout, stream);
     } else if (headers[":method"] === "GET") {
       // Serve static file from /tmp
-      // http2 handles ../../ inputs already
-      // Do we need to parse out/ignore query params?
-      if (id.endsWith(".m3u8")) {
-        outHeaders["content-type"] = "application/vnd.apple.mpegurl";
-        outHeaders['cache-control'] = 'no-cache';
-      } else if (id.endsWith(".ts")) {
-        outHeaders["content-type"] = "video/mp2t";
-      }
-      if (!fs.existsSync('/tmp' + id)) {
+      if (!fs.existsSync(basePath + id)) {
         stream.respond({ ":status": 404, ...outHeaders });
         stream.end();
         return;
       }
-      const fileStream = fs.createReadStream("/tmp" + id);
+      if (id.endsWith(".m3u8")) {
+        outHeaders["content-type"] = "application/vnd.apple.mpegurl";
+        outHeaders["cache-control"] = "no-cache";
+      } else if (id.endsWith(".ts")) {
+        outHeaders["content-type"] = "video/mp2t";
+      }
+      const fileStream = fs.createReadStream(basePath + id);
       stream.respond(outHeaders);
       await pipeline(fileStream, stream);
     } else {
@@ -169,13 +167,27 @@ server.on("stream", async (stream, headers) => {
   }
 });
 
-// Background process to clean up tmp files older than a day
-setInterval(() => {
-  const files = fs.readdirSync('/tmp');
-  for(let file of files) {
-    if (Date.now() - fs.statSync(file).birthtimeMs > 24 * 60 * 60 *1000) {
-      console.log('deleting ' + file);
-      fs.unlinkSync('/tmp/' + file);
+// Background process to clean up tmp files
+setInterval(
+  async () => {
+    if (!existsSync(basePath)) {
+      return;
     }
-  }
-});
+    const files = await readdir(basePath);
+    for (let file of files) {
+      try {
+        const filePath = basePath + "/" + file;
+        if (
+          fs.existsSync(filePath) &&
+          Date.now() - (await stat(filePath)).birthtimeMs > 6 * 60 * 60 * 1000
+        ) {
+          console.log("deleting " + file);
+          await unlink(filePath);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  },
+  60 * 60 * 1000,
+);
