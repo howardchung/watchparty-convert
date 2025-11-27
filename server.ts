@@ -26,7 +26,6 @@ import { pipeline } from "node:stream/promises";
 // Current solution: Write to HLS/m3u8 and treat as a live stream
 // Set up TOTP to verify subscribers if needed
 
-
 fs.mkdirSync("/tmp/convert", { recursive: true });
 const key = process.env.SSL_KEY_FILE
   ? fs.readFileSync(process.env.SSL_KEY_FILE).toString()
@@ -90,7 +89,7 @@ const opts3 = (id: string) => [
 const rooms = new Map<string, cp.ChildProcessWithoutNullStreams>();
 server.on("stream", async (stream, headers) => {
   try {
-    const url = new URL('http://localhost' + (headers[":path"] ?? ""));
+    const url = new URL("http://localhost" + (headers[":path"] ?? ""));
     const id = url.pathname;
     console.log(headers[":method"], id);
     let outHeaders: http2.OutgoingHttpHeaders = {
@@ -140,20 +139,24 @@ server.on("stream", async (stream, headers) => {
       await pipeline(ffmpeg.stdout, stream);
     } else if (headers[":method"] === "GET") {
       // Serve static file from /tmp
-      if (!fs.existsSync(basePath + id)) {
-        stream.respond({ ":status": 404, ...outHeaders });
-        stream.end();
-        return;
-      }
       if (id.endsWith(".m3u8")) {
         outHeaders["content-type"] = "application/vnd.apple.mpegurl";
         outHeaders["cache-control"] = "no-cache";
       } else if (id.endsWith(".ts")) {
         outHeaders["content-type"] = "video/mp2t";
       }
-      const fileStream = fs.createReadStream(basePath + id);
-      stream.respond(outHeaders);
-      await pipeline(fileStream, stream);
+      try {
+        const fileStream = fs.createReadStream(basePath + id);
+        stream.respond(outHeaders);
+        await pipeline(fileStream, stream);
+      } catch (e: any) {
+        if (e.code === "ENOENT" && !stream.headersSent) {
+          stream.respond({ ":status": 404, ...outHeaders });
+          stream.end();
+        } else {
+          throw e;
+        }
+      }
     } else {
       stream.respond({ ":status": 404, ...outHeaders });
       stream.end();
@@ -170,23 +173,24 @@ server.on("stream", async (stream, headers) => {
 // Background process to clean up tmp files
 setInterval(
   async () => {
-    if (!existsSync(basePath)) {
-      return;
-    }
-    const files = await readdir(basePath);
-    for (let file of files) {
-      try {
-        const filePath = basePath + "/" + file;
-        if (
-          fs.existsSync(filePath) &&
-          Date.now() - (await stat(filePath)).birthtimeMs > 6 * 60 * 60 * 1000
-        ) {
-          console.log("deleting " + file);
-          await unlink(filePath);
+    try {
+      const files = await readdir(basePath);
+      for (let file of files) {
+        try {
+          const filePath = basePath + "/" + file;
+          if (
+            Date.now() - (await stat(filePath)).birthtimeMs >
+            6 * 60 * 60 * 1000
+          ) {
+            console.log("deleting " + file);
+            await unlink(filePath);
+          }
+        } catch (e) {
+          console.error(e);
         }
-      } catch (e) {
-        console.error(e);
       }
+    } catch (e) {
+      console.error(e);
     }
   },
   60 * 60 * 1000,
