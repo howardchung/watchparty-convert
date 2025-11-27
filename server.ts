@@ -89,6 +89,7 @@ const opts3 = (id: string) => [
 const rooms = new Map<string, cp.ChildProcessWithoutNullStreams>();
 server.on("stream", async (stream, headers) => {
   try {
+    stream.on('error', handleError);
     const url = new URL("http://localhost" + (headers[":path"] ?? ""));
     const id = url.pathname;
     console.log(headers[":method"], id);
@@ -165,12 +166,18 @@ server.on("stream", async (stream, headers) => {
       stream.end();
     }
   } catch (e: any) {
+    handleError(e);
+  }
+  function handleError(e: any) {
     console.error(e);
     if (!stream.headersSent) {
       stream.respond({ ":status": 500 });
     }
     if (!stream.closed) {
       stream.end("error");
+    }
+    if (!stream.destroyed) {
+      stream.destroy(e); // Destroy the stream if not already destroyed
     }
   }
 });
