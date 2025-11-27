@@ -1,5 +1,5 @@
 import cp from "node:child_process";
-import fs, { existsSync } from "node:fs";
+import fs from "node:fs";
 import { unlink, readdir, stat } from "node:fs/promises";
 import http2 from "node:http2";
 import { pipeline } from "node:stream/promises";
@@ -26,7 +26,6 @@ import { pipeline } from "node:stream/promises";
 // Current solution: Write to HLS/m3u8 and treat as a live stream
 // Set up TOTP to verify subscribers if needed
 
-fs.mkdirSync("/tmp/convert", { recursive: true });
 const key = process.env.SSL_KEY_FILE
   ? fs.readFileSync(process.env.SSL_KEY_FILE).toString()
   : "";
@@ -39,6 +38,7 @@ const server =
 const basePath = "/tmp/convert";
 
 server.listen(port);
+fs.mkdirSync("/tmp/convert", { recursive: true });
 
 const x264 = [
   "-filter:v",
@@ -139,24 +139,27 @@ server.on("stream", async (stream, headers) => {
       await pipeline(ffmpeg.stdout, stream);
     } else if (headers[":method"] === "GET") {
       // Serve static file from /tmp
+      try {
+        // Check if file exists since createReadStream always succeeds
+        await stat(basePath + id);
+      } catch (e: any) {
+        if (e.code === "ENOENT") {
+          stream.respond({ ":status": 404, ...outHeaders });
+          stream.end();
+          return;
+        } else {
+          throw e;
+        }
+      }
       if (id.endsWith(".m3u8")) {
         outHeaders["content-type"] = "application/vnd.apple.mpegurl";
         outHeaders["cache-control"] = "no-cache";
       } else if (id.endsWith(".ts")) {
         outHeaders["content-type"] = "video/mp2t";
       }
-      try {
-        const fileStream = fs.createReadStream(basePath + id);
-        stream.respond(outHeaders);
-        await pipeline(fileStream, stream);
-      } catch (e: any) {
-        if (e.code === "ENOENT" && !stream.headersSent) {
-          stream.respond({ ":status": 404, ...outHeaders });
-          stream.end();
-        } else {
-          throw e;
-        }
-      }
+      const fileStream = fs.createReadStream(basePath + id);
+      stream.respond(outHeaders);
+      await pipeline(fileStream, stream);
     } else {
       stream.respond({ ":status": 404, ...outHeaders });
       stream.end();
