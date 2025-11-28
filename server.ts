@@ -1,8 +1,10 @@
 import cp from "node:child_process";
 import fs from "node:fs";
 import { unlink, readdir, stat } from "node:fs/promises";
-import http2 from "node:http2";
+import http from "node:http";
+import https from "node:https";
 import { pipeline } from "node:stream/promises";
+import { createWebSocketStream, WebSocketServer } from "ws";
 
 // http/http2 server
 // http2 allows request streaming (https://developer.chrome.com/docs/capabilities/web-apis/fetch-streaming-requests)
@@ -34,10 +36,14 @@ const cert = process.env.SSL_CRT_FILE
   : "";
 const port = Number(process.env.PORT) || 80;
 const server =
-  key && cert ? http2.createSecureServer({ key, cert }) : http2.createServer();
+  key && cert ? https.createServer({ key, cert }) : http.createServer();
 const basePath = "/tmp/convert";
 
-server.listen(port);
+server.listen(port, () => {
+  console.log("listening on %s", port);
+});
+const wss = new WebSocketServer({ server });
+
 fs.mkdirSync("/tmp/convert", { recursive: true });
 
 const x264 = [
@@ -86,79 +92,86 @@ const opts3 = (id: string) => [
   basePath + id,
 ];
 
-server.on("stream", async (stream, headers) => {
-  try {
-    stream.on('error', handleError);
-    const url = new URL("http://localhost" + (headers[":path"] ?? ""));
-    const id = url.pathname;
-    console.log(headers[":method"], id);
-    let outHeaders: http2.OutgoingHttpHeaders = {
-      "access-control-allow-origin": "*",
-    };
-    if (headers[":method"] == "OPTIONS") {
-      stream.respond(outHeaders);
-      stream.end();
-    } else if (headers[":method"] === "POST") {
-      // Publisher
-        let opts = opts3(id);
-        if (id.endsWith(".mpegts")) {
-          opts = opts1;
-        }
-        let ffmpeg: cp.ChildProcessWithoutNullStreams | null = cp.spawn(
-          "ffmpeg",
-          opts,
-        );
-        ffmpeg.stderr.on("data", (data) => {
-          console.log(data.toString());
-          // Would be nice to send this to the client as a stream but right now fetch buffers the entire response
-          // stream.write(data.toString());
-        });
-        stream.respond(outHeaders);
-        try {
-          await pipeline(stream, ffmpeg.stdin);
-        } catch (e) {
-          console.log(e);
-        }
-        // clean up room when stream is done (complete or error)
-        console.log("upload ended, cleaning up");
-        ffmpeg.kill();
-    } else if (headers[":method"] === "GET") {
-      // Serve static file from /tmp
-      try {
-        // Check if file exists since createReadStream always succeeds
-        await stat(basePath + id);
-      } catch (e: any) {
-        if (e.code === "ENOENT") {
-          stream.respond({ ":status": 404, ...outHeaders });
-          stream.end();
-          return;
-        } else {
-          throw e;
-        }
-      }
-      if (id.endsWith(".m3u8")) {
-        outHeaders["content-type"] = "application/vnd.apple.mpegurl";
-        outHeaders["cache-control"] = "no-cache";
-      } else if (id.endsWith(".ts")) {
-        outHeaders["content-type"] = "video/mp2t";
-      }
-      const fileStream = fs.createReadStream(basePath + id);
-      stream.respond(outHeaders);
-      await pipeline(fileStream, stream);
+wss.on("connection", async (ws, req) => {
+  // Upload
+  ws.once("close", handleClose);
+  ws.once("error", handleClose);
+  const url = new URL("http://localhost" + (req.url ?? ""));
+  const id = url.pathname;
+  let opts = opts3(id);
+  if (id.endsWith(".mpegts")) {
+    opts = opts1;
+  }
+  let ffmpeg: cp.ChildProcessWithoutNullStreams = cp.spawn("ffmpeg", opts);
+  ffmpeg.stderr.on("data", (data) => {
+    console.log(data.toString());
+  });
+
+  const duplex = createWebSocketStream(ws);
+  ws.send(1);
+  duplex.on("data", () => {
+    // Got a chunk, request the next one
+    if (ws.readyState === ws.OPEN) {
+      ws.send(1);
     }
-  } catch (e: any) {
-    handleError(e);
+  });
+  try {
+    await pipeline(duplex, ffmpeg.stdin);
+  } catch (e) {
+    handleClose(e);
+  }
+
+  function handleClose(e?: any) {
+    console.error(e);
+    ws.close();
+    ffmpeg.kill();
+  }
+});
+
+server.on("request", async (req, res) => {
+  const url = new URL("http://localhost" + (req.url ?? ""));
+  const id = url.pathname;
+  console.log(req.method, id);
+  let outHeaders: Record<string, string> = {
+    "access-control-allow-origin": "*",
+  };
+  res.setHeaders(new Headers(outHeaders));
+  if (req.method === "GET") {
+    // Serve static file from /tmp
+    try {
+      // Check if file exists since createReadStream always succeeds
+      await stat(basePath + id);
+    } catch (e: any) {
+      if (e.code === "ENOENT") {
+        res.statusCode = 404;
+        res.end("not found");
+        return;
+      } else {
+        throw e;
+      }
+    }
+    if (id.endsWith(".m3u8")) {
+      outHeaders["content-type"] = "application/vnd.apple.mpegurl";
+      outHeaders["cache-control"] = "no-cache";
+    } else if (id.endsWith(".ts")) {
+      outHeaders["content-type"] = "video/mp2t";
+    }
+    const fileStream = fs.createReadStream(basePath + id);
+    res.setHeaders(new Headers(outHeaders));
+    try {
+      await pipeline(fileStream, res);
+    } catch (e) {
+      handleError(e);
+    }
+  } else {
+    res.statusCode = 404;
+    res.end("not found");
   }
   function handleError(e: any) {
     console.error(e);
-    if (!stream.headersSent) {
-      stream.respond({ ":status": 500 });
-    }
-    if (!stream.closed) {
-      stream.end("error");
-    }
-    if (!stream.destroyed) {
-      stream.destroy(e); // Destroy the stream if not already destroyed
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.end("error");
     }
   }
 });
