@@ -86,7 +86,6 @@ const opts3 = (id: string) => [
   basePath + id,
 ];
 
-const rooms = new Map<string, cp.ChildProcessWithoutNullStreams>();
 server.on("stream", async (stream, headers) => {
   try {
     stream.on('error', handleError);
@@ -101,7 +100,6 @@ server.on("stream", async (stream, headers) => {
       stream.end();
     } else if (headers[":method"] === "POST") {
       // Publisher
-      if (!rooms.get(id)) {
         let opts = opts3(id);
         if (id.endsWith(".mpegts")) {
           opts = opts1;
@@ -110,8 +108,6 @@ server.on("stream", async (stream, headers) => {
           "ffmpeg",
           opts,
         );
-        rooms.set(id, ffmpeg);
-        console.log(id, ffmpeg);
         ffmpeg.stderr.on("data", (data) => {
           console.log(data.toString());
           // Would be nice to send this to the client as a stream but right now fetch buffers the entire response
@@ -126,18 +122,6 @@ server.on("stream", async (stream, headers) => {
         // clean up room when stream is done (complete or error)
         console.log("upload ended, cleaning up");
         ffmpeg.kill();
-        rooms.delete(id);
-      }
-    } else if (id.endsWith(".mpegts") && headers[":method"] === "GET") {
-      // Reader
-      let ffmpeg = rooms.get(id);
-      // Wait for room to be available if it's not
-      while (!ffmpeg) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        ffmpeg = rooms.get(id);
-      }
-      stream.respond(outHeaders);
-      await pipeline(ffmpeg.stdout, stream);
     } else if (headers[":method"] === "GET") {
       // Serve static file from /tmp
       try {
@@ -161,9 +145,6 @@ server.on("stream", async (stream, headers) => {
       const fileStream = fs.createReadStream(basePath + id);
       stream.respond(outHeaders);
       await pipeline(fileStream, stream);
-    } else {
-      stream.respond({ ":status": 404, ...outHeaders });
-      stream.end();
     }
   } catch (e: any) {
     handleError(e);
