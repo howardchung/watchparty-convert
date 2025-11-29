@@ -103,26 +103,22 @@ wss.on("connection", async (ws, req) => {
   ffmpeg.stderr.on("data", (data) => {
     console.log(data.toString());
   });
-  ffmpeg.stdin.once("error", handleClose);
-
+  const duplex = createWebSocketStream(ws);
   ws.send(1);
-  ws.on("message", (chunk) => {
-    const next = ffmpeg.stdin.write(chunk);
-    if (next) {
-      ws.send(1);
-    } else {
-      ffmpeg.stdin.once("drain", () => {
-        ws.send(1);
-      });
-    }
+  duplex.on('data', () => {
+    // Request next chunk
+    ws.send(1);
   });
-  ws.once("close", handleClose);
   ws.once("error", handleClose);
+  try {
+    await pipeline(duplex, ffmpeg.stdin);
+  } catch (e) {
+    handleClose(e);
+  }
 
   function handleClose(e?: any) {
     console.error(e);
     ws.close();
-    ffmpeg.stdin.end();
   }
 });
 
