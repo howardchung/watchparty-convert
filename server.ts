@@ -103,6 +103,7 @@ wss.on("connection", async (ws, req) => {
   ffmpeg.stderr.on("data", (data) => {
     console.log(data.toString());
   });
+  ffmpeg.stdin.once("error", handleClose);
 
   ws.send(1);
   ws.on("message", (chunk) => {
@@ -115,14 +116,13 @@ wss.on("connection", async (ws, req) => {
       });
     }
   });
-  ffmpeg.stdin.once("error", handleClose);
   ws.once("close", handleClose);
   ws.once("error", handleClose);
 
   function handleClose(e?: any) {
     console.error(e);
     ws.close();
-    ffmpeg.kill();
+    ffmpeg.stdin.end();
   }
 });
 
