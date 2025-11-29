@@ -1,6 +1,6 @@
 import cp from "node:child_process";
 import fs from "node:fs";
-import { unlink, readdir, stat } from "node:fs/promises";
+import { unlink, readdir, stat, readFile } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import { pipeline } from "node:stream/promises";
@@ -93,9 +93,6 @@ const opts3 = (id: string) => [
 ];
 
 wss.on("connection", async (ws, req) => {
-  // Upload
-  ws.once("close", handleClose);
-  ws.once("error", handleClose);
   const url = new URL("http://localhost" + (req.url ?? ""));
   const id = url.pathname;
   let opts = opts3(id);
@@ -107,19 +104,20 @@ wss.on("connection", async (ws, req) => {
     console.log(data.toString());
   });
 
-  const duplex = createWebSocketStream(ws);
   ws.send(1);
-  duplex.on("data", () => {
-    // Got a chunk, request the next one
-    if (ws.readyState === ws.OPEN) {
+  ws.on("message", (chunk) => {
+    const next = ffmpeg.stdin.write(chunk);
+    if (next) {
       ws.send(1);
+    } else {
+      ffmpeg.stdin.once("drain", () => {
+        ws.send(1);
+      });
     }
   });
-  try {
-    await pipeline(duplex, ffmpeg.stdin);
-  } catch (e) {
-    handleClose(e);
-  }
+  ffmpeg.stdin.once("error", handleClose);
+  ws.once("close", handleClose);
+  ws.once("error", handleClose);
 
   function handleClose(e?: any) {
     console.error(e);
@@ -132,36 +130,25 @@ server.on("request", async (req, res) => {
   const url = new URL("http://localhost" + (req.url ?? ""));
   const id = url.pathname;
   console.log(req.method, id);
-  let outHeaders: Record<string, string> = {
-    "access-control-allow-origin": "*",
-  };
-  res.setHeaders(new Headers(outHeaders));
+  res.setHeader("access-control-allow-origin", "*");
   if (req.method === "GET") {
-    // Serve static file from /tmp
+    // Serve static file
+    if (id.endsWith(".m3u8")) {
+      res.setHeader("content-type", "application/vnd.apple.mpegurl");
+      res.setHeader("cache-control", "no-cache");
+    } else if (id.endsWith(".ts")) {
+      res.setHeader("content-type", "video/mp2t");
+    }
+    // We can use createReadStream and pipeline but segments are pretty small so just load them into memory
     try {
-      // Check if file exists since createReadStream always succeeds
-      await stat(basePath + id);
+      res.end(await readFile(basePath + id));
     } catch (e: any) {
       if (e.code === "ENOENT") {
         res.statusCode = 404;
         res.end("not found");
-        return;
       } else {
-        throw e;
+        handleError(e);
       }
-    }
-    if (id.endsWith(".m3u8")) {
-      outHeaders["content-type"] = "application/vnd.apple.mpegurl";
-      outHeaders["cache-control"] = "no-cache";
-    } else if (id.endsWith(".ts")) {
-      outHeaders["content-type"] = "video/mp2t";
-    }
-    const fileStream = fs.createReadStream(basePath + id);
-    res.setHeaders(new Headers(outHeaders));
-    try {
-      await pipeline(fileStream, res);
-    } catch (e) {
-      handleError(e);
     }
   } else {
     res.statusCode = 404;
