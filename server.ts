@@ -112,12 +112,7 @@ wss.on("connection", async (ws, req) => {
   try {
     await pipeline(duplex, ffmpeg.stdin);
   } catch (e) {
-    handleClose(e);
-  }
-
-  function handleClose(e?: any) {
     console.error(e);
-    ws.close();
   }
 });
 
