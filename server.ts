@@ -109,7 +109,6 @@ wss.on("connection", async (ws, req) => {
     // Request next chunk
     ws.send(1);
   });
-  ws.once("error", handleClose);
   try {
     await pipeline(duplex, ffmpeg.stdin);
   } catch (e) {
