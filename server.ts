@@ -135,18 +135,24 @@ wss.on("connection", async (ws, req) => {
     if (resp.body) {
       // @ts-expect-error
       input = Readable.fromWeb(resp.body);
+      input.on('data', (chunk) => {
+        duplex.push(chunk);
+      });
     }
   }
-  ws.send(1);
-  duplex.on('data', () => {
-    // Request next chunk
-    ws.send(1);
+  // Request first chunk
+  ws.send(0);
+  duplex.on('data', (chunk) => {
+    // Request next chunk (also keeps connection alive)
+    ws.send(chunk.length);
   });
   duplex.on('end', () => {
+    // If connection is lost, cancel the http request
     controller.abort();
+    input?.destroy();
   });
   try {
-    await pipeline(input ?? duplex, ffmpeg.stdin);
+    await pipeline(duplex, ffmpeg.stdin);
   } catch (e) {
     console.error(e);
   }
