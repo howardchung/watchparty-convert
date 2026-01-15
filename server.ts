@@ -3,6 +3,7 @@ import fs from "node:fs";
 import { unlink, readdir, stat, readFile } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
+import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createWebSocketStream, WebSocketServer } from "ws";
 
@@ -65,6 +66,17 @@ const x264 = [
   "60",
 ];
 
+const audioOnly = [
+  "-c:v",
+  "copy",
+  "-c:a",
+  "aac",
+  "-ac",
+  "2",
+  "-g",
+  "60",
+];
+
 const opts1 = ["-re", "-i", "pipe:", ...x264, "-f", "mpegts", "-"];
 
 const opts2 = (id: string) => [
@@ -92,9 +104,21 @@ const opts3 = (id: string) => [
   basePath + id,
 ];
 
+const opts4 = (id: string) => [
+  "-i",
+  "pipe:",
+  ...audioOnly,
+  "-f",
+  "hls",
+  "-hls_list_size",
+  "0",
+  basePath + id,
+];
+
 wss.on("connection", async (ws, req) => {
   const url = new URL("http://localhost" + (req.url ?? ""));
   const id = url.pathname;
+  const sourceUrl = url.searchParams.get('url');
   let opts = opts3(id);
   if (id.endsWith(".mpegts")) {
     opts = opts1;
@@ -103,14 +127,26 @@ wss.on("connection", async (ws, req) => {
   ffmpeg.stderr.on("data", (data) => {
     console.log(data.toString());
   });
-  const duplex = createWebSocketStream(ws);
+  let duplex = createWebSocketStream(ws);
+  let input: Readable | undefined;
+  const controller = new AbortController();
+  if (sourceUrl) {
+    const resp = await fetch(sourceUrl, { signal: controller.signal });
+    if (resp.body) {
+      // @ts-expect-error
+      input = Readable.fromWeb(resp.body);
+    }
+  }
   ws.send(1);
   duplex.on('data', () => {
     // Request next chunk
     ws.send(1);
   });
+  duplex.on('end', () => {
+    controller.abort();
+  });
   try {
-    await pipeline(duplex, ffmpeg.stdin);
+    await pipeline(input ?? duplex, ffmpeg.stdin);
   } catch (e) {
     console.error(e);
   }
